@@ -176,10 +176,9 @@ def start_record_by_service(message, type_id):
     i_dont_know_that_command(message)
 
 
-# TODO: выдача сетей, которые есть в городе пользователя
 def start_record_by_center(message, type_id):
     cur_centers = list()
-    for cur_center in GET_CENTERS_BY_TYPE(type_id):
+    for cur_center in GET_CENTERS_BY_TYPE_AND_CITY(type_id, get_user(message).city):
         cur_centers.append((cur_center.name, f"start_record_by_place.{cur_center.id}"))
     cur_centers.append((MAIN_MENU_BUTTON_TEXT, "main_menu"))
     markup = generate_markup(cur_centers)
@@ -188,10 +187,9 @@ def start_record_by_center(message, type_id):
                      reply_markup=markup)
 
 
-# TODO: выдача салонов, которые есть в городе пользователя
 def start_record_by_place(message, center_id):
     cur_places = list()
-    for cur_place in GET_PLACES_BY_CENTER(center_id):
+    for cur_place in GET_PLACES_BY_CENTER_AND_CITY(center_id, get_user(message).city):
         cur_places.append((cur_place.address, f"start_record.{cur_place.id}"))
     cur_places.append((f"⬅️ Вернуться к выбору сети салонов", f"start_record_by_center.{GET_CENTER(center_id).type_id}"))
     cur_places.append((MAIN_MENU_BUTTON_TEXT, "main_menu"))
