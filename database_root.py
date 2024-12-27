@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Table
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
@@ -7,6 +7,9 @@ from settings import NAME_OF_DB
 
 # Base class for ORM models
 Base = declarative_base()
+
+
+WEEK_DAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
 # Таблица TYPE
@@ -41,7 +44,7 @@ class Service(Base):
     type_id = Column(Integer, ForeignKey('types.id'), nullable=False)
 
     type = relationship('Type', back_populates='services')
-    places = relationship('Place', secondary='service_place', back_populates='services')
+    places = relationship('Place', secondary='service_place', back_populates='services', lazy='dynamic')
     records = relationship('Record', back_populates='service')
 
     duration = Column(Integer, default=60)
@@ -50,14 +53,14 @@ class Service(Base):
         return time(hour=self.duration // 60, minute=self.duration % 60)
 
     def get_duration_str(self):
-        return self.get_duration().strftime("%H:%M (чч:мм)")
-        # if self.get_duration().hour > 0:
-        #     return self.get_duration().strftime("%Hч %Mмин")
-        # else:
-        #     return self.get_duration().strftime("%Mм")
+        # return self.get_duration().strftime("%H:%M (чч:мм)")
+        if self.get_duration().hour > 0:
+            return self.get_duration().strftime("%H ч %M минут")
+        else:
+            return self.get_duration().strftime("%M минут")
 
     def __repr__(self):
-        return f"Услуга '{self.name}' длительностью {self.get_duration_str()} из салонов: {[place.address for place in self.places]}"
+        return f"Услуга '{self.name}' длительностью ({self.get_duration_str()}) из салонов: {[place.address for place in self.places]}"
 
 
 # Таблица CENTERS
@@ -96,6 +99,8 @@ class Place(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     center_id = Column(Integer, ForeignKey('centers.id'), nullable=False)
     address = Column(String, nullable=False)
+    graph_start = Column(Integer, default=8, nullable=False)
+    graph_end = Column(Integer, default=18, nullable=False)
     city_id = Column(Integer, ForeignKey('cities.id'), nullable=False)
     owner_id = Column(Integer, ForeignKey('users.id'), nullable=False)
 
@@ -175,6 +180,14 @@ class User(Base):
     def get_user(_id):
         return GET_USER(_id)
 
+    def get_records(self):
+        actual_records = list()
+        now = datetime.now()
+        for record in self.records:
+            if record.start_date > now:
+                actual_records.append(record)
+        return actual_records
+
     def __repr__(self):
         return f"Пользователь '{self.name}' из города '{self.city.name}'"
 
@@ -188,11 +201,50 @@ class Record(Base):
     service_id = Column(Integer, ForeignKey('services.id'), nullable=False)
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)
-    active = Column(Boolean, default=True, nullable=False)
+    active = Column(Boolean, default=False, nullable=False)
 
     user = relationship('User', back_populates='records')
     place = relationship('Place', back_populates='records')
     service = relationship('Service', back_populates='records')
+
+    def get_range_of_date(self):
+        if self.start_date.date() == self.end_date.date():
+            return f"{self.start_date.strftime('%d.%m.%Y %H:%M')}-{self.end_date.strftime('%H:%M')}"
+        else:
+            return f"{self.start_date.strftime('%d.%m.%Y %H:%M')}-{self.end_date.strftime('%d.%m.%Y %H:%M')}"
+
+    def get_remaining_time(self):
+        return self.start_date - datetime.now()
+
+    def get_text_of_remaining_time(self):
+        cur_timedelta = self.get_remaining_time()
+        if cur_timedelta >= timedelta(days=1):
+            return f"{cur_timedelta.days} д {cur_timedelta.seconds // 3600} ч {(cur_timedelta.seconds // 60) % 60} мин"
+        elif cur_timedelta >= timedelta(hours=1):
+            return f"{cur_timedelta.seconds // 3600} ч {(cur_timedelta.seconds // 60) % 60} мин"
+        else:
+            return f"{(cur_timedelta.seconds // 60) % 60} мин"
+
+    def is_soon(self):
+        return self.get_remaining_time() < timedelta(days=1)
+
+    def is_very_soon(self):
+        return self.get_remaining_time() < timedelta(hours=1)
+
+    def get_text_for_str(self, i):
+        if not self.active:
+            cur_emoji = "❓"
+        elif self.is_very_soon():
+            cur_emoji = "🟢"
+        elif self.is_soon():
+            cur_emoji = "🔴"
+        else:
+            cur_emoji = "⚪️"
+        return f"{cur_emoji} {i + 1}) {self.get_range_of_date()} в салон '{self.service.name}' по адресу: {self.place.address}"
+
+    # TODO: подправить вывод даты в кнопку
+    def get_text_for_button(self, i):
+        return f"{i + 1}) {self.get_range_of_date()} в '{self.service.name}'"
 
     def __repr__(self):
         return f"Запись пользователя '{self.user.name}' в салон по адресу '{self.place.address}' на {self.start_date}"
@@ -204,6 +256,33 @@ class ServicePlace(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     service_id = Column(Integer, ForeignKey('services.id'), nullable=False)
     place_id = Column(Integer, ForeignKey('places.id'), nullable=False)
+
+    def get_next_days(self, days=9):
+        now = datetime.now()
+        if now.hour >= GET_PLACE(self.place_id).graph_end:
+            now += timedelta(days=1)
+        today = now.date()
+        next_days = list()
+        for i in range(days):
+            cur_day = today + timedelta(days=i)
+            cur_week = WEEK_DAYS[int(cur_day.strftime("%w"))]
+            next_days.append((f"{cur_day.strftime('%d.%m')} | {cur_week}",
+                              f"{cur_day.strftime('%d/%m/%Y')}"))
+        return next_days
+
+    def get_next_times(self, date):
+        cur_time = datetime(date.year, date.month, date.day, GET_PLACE(self.place_id).graph_start)
+        service_duration = timedelta(minutes=GET_SERVICE(self.service_id).duration)
+        end_time = datetime(date.year, date.month, date.day, GET_PLACE(self.place_id).graph_end, 1) - service_duration
+        now = datetime.now()
+        next_times = list()
+        while cur_time < end_time:
+            if cur_time > now:
+                cur_end_time = cur_time + service_duration
+                next_times.append((f"{cur_time.strftime('%H:%M')} - {cur_end_time.strftime('%H:%M')}",
+                                  f"{cur_time.strftime('%d/%m/%Y/%H/%M')}"))
+            cur_time += service_duration
+        return next_times
 
 
 # Инициализация базы данных
@@ -338,9 +417,36 @@ def GET_CITIES():
     return db_service.list(City)
 
 
+def GET_SERVICES_BY_TYPE(_type):
+    # return db_service.list_with_filter(Center, Center.type_id, GET_TYPE(_type))
+    return db_service.get(Type, _type).services
+
+
+def GET_SERVICES_BY_PLACE(_place_id):
+    # return db_service.list_with_filter(Center, Center.type_id, GET_TYPE(_type))
+    return db_service.get(Place, _place_id).services
+
+
+def GET_SERVICES_BY_TYPE_AND_CITY(_type, city):
+    result = list()
+    for cur_service in GET_SERVICES_BY_TYPE(_type):
+        for place_of_cur_center in cur_service.places:
+            if place_of_cur_center.city == city:
+                break
+        else:
+            continue
+        result.append(cur_service)
+    return result
+
+
+def GET_SERVICE(_id):
+    return db_service.get(Service, _id)
+
+
 def GET_CENTERS_BY_TYPE(_type):
     # return db_service.list_with_filter(Center, Center.type_id, GET_TYPE(_type))
     return db_service.get(Type, _type).centers
+
 
 def GET_CENTERS_BY_TYPE_AND_CITY(_type, city):
     result = list()
@@ -367,12 +473,42 @@ def GET_PLACES_BY_CENTER_AND_CITY(_center_id, city):
                                   query=db_service.only_filter(Place.center_id, _center_id, model=Place))
 
 
+def GET_PLACES_BY_SERVICE_AND_CITY(_service_id, city):
+    return db_service.only_filter(Place.city, city,
+                                  query=GET_SERVICE(_service_id).places)
+
+
 def GET_PLACES():
     return db_service.list(Place)
 
 
 def GET_PLACE(_id):
     return db_service.get(Place, _id)
+
+
+def GET_SERVICE_PLACE(_place_id, _service_id):
+    return db_service.only_filter(ServicePlace.service_id, _service_id,
+                                  query=db_service.only_filter(ServicePlace.place_id, _place_id, model=ServicePlace)).one()
+
+
+def ADD_RECORD(_user_id, _place_id, _service_id, _start_date):
+    cur_record = Record(user_id=_user_id, place_id=_place_id, service_id=_service_id,
+                        start_date=_start_date,
+                        end_date=_start_date + timedelta(minutes=GET_SERVICE(_service_id).duration))
+    db_service.add(cur_record)
+    return cur_record.id
+
+
+def ACTIVATE_RECORD(_record_id):
+    db_service.update(Record, _record_id, active=True)
+
+
+def DELETE_RECORD(_record_id):
+    db_service.delete(Record, _record_id)
+
+
+def GET_RECORD(_id):
+    return db_service.get(Record, _id)
 
 
 # Пример использования
@@ -393,8 +529,10 @@ if __name__ == '__main__':
     db_service.add(city2)
     db_service.add(city3)
 
-    user = User(id=955999723, name='Арслан', number='79999999999', city_id=city1.id, list_of_records='[]')
-    db_service.add(user)
+    user2 = User(id=955999723, name='Арслан', number='79999999999', city_id=city1.id, list_of_records='[]')
+    user1 = User(id=5112141963, name='Фархад', number='79999999998', city_id=city2.id, list_of_records='[]')
+    db_service.add(user1)
+    db_service.add(user2)
 
     # Пример добавления центра с типом
     center1 = Center(name='Бороды по колено', type_id=1)
@@ -411,10 +549,10 @@ if __name__ == '__main__':
     db_service.add(service2)
     db_service.add(service3)
 
-    place1 = Place(center_id=1, address='ул. Чистопольская, дом 72', city_id=city1.id, owner_id=user.id, services=[service1, service2])
-    place2 = Place(center_id=2, address='ул. Кремлёвская, дом 13', city_id=city1.id, owner_id=user.id, services=[service2])
-    place3 = Place(center_id=2, address='ул. Кремлёвская, дом 102', city_id=city2.id, owner_id=user.id, services=[service1, service2, service3])
-    place4 = Place(center_id=2, address='ул. Баумана, дом 25', city_id=city1.id, owner_id=user.id, services=[service1])
+    place1 = Place(center_id=1, address='ул. Чистопольская, дом 72', city_id=city1.id, owner_id=user1.id, services=[service1, service2])
+    place2 = Place(center_id=2, address='ул. Кремлёвская, дом 13', city_id=city1.id, owner_id=user1.id, services=[service2])
+    place3 = Place(center_id=2, address='ул. Кремлёвская, дом 102', city_id=city2.id, owner_id=user1.id, services=[service1, service2, service3])
+    place4 = Place(center_id=2, address='ул. Баумана, дом 25', city_id=city1.id, owner_id=user1.id, services=[service1])
     db_service.add(place1)
     db_service.add(place2)
     db_service.add(place3)
@@ -433,9 +571,9 @@ if __name__ == '__main__':
     db_service.add(service2)
     db_service.add(service3)
 
-    place1 = Place(center_id=center1.id, address='ул. Петровская, дом 14', city_id=city1.id, owner_id=user.id, services=[service1, service2, service3])
-    place2 = Place(center_id=center1.id, address='ул. Сексуальная, дом 69', city_id=city1.id, owner_id=user.id, services=[service1, service2, service3])
-    place3 = Place(center_id=center2.id, address='ул. Обычная, дом 33', city_id=city1.id, owner_id=user.id, services=[service3])
+    place1 = Place(center_id=center1.id, address='ул. Петровская, дом 14', city_id=city1.id, owner_id=user1.id, services=[service1, service2, service3])
+    place2 = Place(center_id=center1.id, address='ул. Сексуальная, дом 69', city_id=city1.id, owner_id=user1.id, services=[service1, service2, service3])
+    place3 = Place(center_id=center2.id, address='ул. Обычная, дом 33', city_id=city1.id, owner_id=user1.id, services=[service3])
     db_service.add(place1)
     db_service.add(place2)
     db_service.add(place3)
@@ -452,18 +590,30 @@ if __name__ == '__main__':
     db_service.add(service1)
     db_service.add(service2)
 
-    place1 = Place(center_id=center1.id, address='ул. Суперская, дом 3/В', city_id=city1.id, owner_id=user.id, services=[service1, service2])
-    place2 = Place(center_id=center1.id, address='ул. Запрещённая, дом 228', city_id=city1.id, owner_id=user.id, services=[service1])
-    place3 = Place(center_id=center1.id, address='ул. Сколько лет КФУ, дом 220', city_id=city1.id, owner_id=user.id, services=[service2])
-    place4 = Place(center_id=center2.id, address='ул. Декабристов, дом 47', city_id=city1.id, owner_id=user.id, services=[service1])
+    place1 = Place(center_id=center1.id, address='ул. Суперская, дом 3/В', city_id=city1.id, owner_id=user1.id, services=[service1, service2])
+    place2 = Place(center_id=center1.id, address='ул. Запрещённая, дом 228', city_id=city1.id, owner_id=user1.id, services=[service1])
+    place3 = Place(center_id=center1.id, address='ул. Сколько лет КФУ, дом 220', city_id=city1.id, owner_id=user1.id, services=[service2])
+    place4 = Place(center_id=center2.id, address='ул. Декабристов, дом 47', city_id=city1.id, owner_id=user1.id, services=[service1])
     db_service.add(place1)
     db_service.add(place2)
     db_service.add(place3)
     db_service.add(place4)
 
-    record = Record(user_id=user.id, place_id=place3.id, service=service2, start_date=datetime(2024, 11, 29, 12),
-                    end_date=datetime(2024, 11, 29, 13))
-    db_service.add(record)
+    record0 = Record(user_id=user2.id, place_id=place3.id, service=service2, start_date=datetime(2024, 12, 26, 23),
+                     end_date=datetime(2024, 12, 27, 0))
+    record1 = Record(user_id=user2.id, place_id=place3.id, service=service2, start_date=datetime(2025, 1, 6, 14),
+                     end_date=datetime(2025, 1, 6, 15))
+    record2 = Record(user_id=user2.id, place_id=place1.id, service=service1, start_date=datetime(2024, 11, 29, 12),
+                     end_date=datetime(2024, 11, 29, 14))
+    record3 = Record(user_id=user2.id, place_id=place4.id, service=service1, start_date=datetime(2024, 12, 31, 23, 50),
+                     end_date=datetime(2025, 1, 1, 1, 50))
+    record4 = Record(user_id=user2.id, place_id=place2.id, service=service1, start_date=datetime(2024, 12, 26, 15, 50),
+                     end_date=datetime(2024, 12, 26, 17, 50))
+    db_service.add(record0)
+    db_service.add(record1)
+    db_service.add(record2)
+    db_service.add(record3)
+    db_service.add(record4)
 
     print('All Types:', db_service.list(Type))
     print('All Services:', db_service.list(Service))

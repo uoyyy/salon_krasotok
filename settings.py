@@ -3,7 +3,7 @@ from random import choice
 APP_NAME = "Твой Beauty Planner"
 START_TEXT = f"Добро пожаловать в {APP_NAME}!"
 CONTINUE_TEXT = f"На связи {APP_NAME}!"
-NAME_OF_DB = "test_db__v0_1.db"
+NAME_OF_DB = "test_db__v0_2.db"
 
 MAIN_MENU_SECTION_TEXT_LIST = ["Вы прекрасны!",
                                "Рады вас здесь видеть!",
