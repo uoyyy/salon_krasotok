@@ -290,7 +290,7 @@ class ServicePlace(Base):
         now = datetime.now()
         next_times = list()
         while cur_time < end_time:
-            if cur_time > now and GET_RECORD_IS_ARMORED(self.place_id, self.service_id, cur_time):
+            if cur_time > now and not GET_RECORD_IS_ARMORED(self.place_id, self.service_id, cur_time):
                 cur_end_time = cur_time + service_duration
                 next_times.append((f"{cur_time.strftime('%H:%M')} - {cur_end_time.strftime('%H:%M')}",
                                   f"{cur_time.strftime('%d/%m/%Y/%H/%M')}"))
