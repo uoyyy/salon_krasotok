@@ -101,10 +101,14 @@ def contact(message):
         main_menu(message)
 
 
-def generate_markup(items, cur_row_width=1):
+def generate_markup(items, cur_row_width=1, message=None):
     markup = types.InlineKeyboardMarkup(row_width=cur_row_width)
     for (name, callback_data) in items:
-        markup.add(types.InlineKeyboardButton(name, callback_data=callback_data))
+        if callback_data[0].isdigit() and message is not None:
+            if get_user(message).role >= int(callback_data[0]):
+                markup.add(types.InlineKeyboardButton(name, callback_data=callback_data[1:]))
+        else:
+            markup.add(types.InlineKeyboardButton(name, callback_data=callback_data))
     return markup
 
 
@@ -148,6 +152,16 @@ def callback_inline(call):
             show_records(call.message)
         elif section == "show_record":
             show_record(call.message, args[0])
+        elif section == "cancel_record":
+            cancel_record(call.message, args[0])
+        elif section == "show_master_records":
+            show_master_records(call.message)
+        elif section == "show_master_record":
+            show_master_record(call.message, args[0])
+        elif section == "confirm_record_from_master":
+            confirm_record_from_master(call.message, args[0])
+        elif section == "cancel_record_from_master":
+            cancel_record_from_master(call.message, args[0])
         elif section == "choose_city":
             if len(args) == 0:
                 choose_city(call.message)
@@ -162,7 +176,9 @@ def callback_inline(call):
 def main_menu(message):
     markup = generate_markup([(f"📝 Записаться", f"start_record_by_type"),
                               (f"📔 Мои записи", f"show_records"),
-                              (f"🏙️ Поменять город", f"choose_city")])
+                              (f"📔 Записи в ваши салоны", f"1show_master_records"),
+                              (f"🏙️ Поменять город", f"choose_city")],
+                             message=message)
 
     bot.send_message(message.chat.id, f"{MAIN_MENU_SECTION_TEXT()}\n\nЧем я могу вам помочь, {get_user(message).name}?",
                      reply_markup=markup)
@@ -229,7 +245,7 @@ def start_record_by_center(message, type_id):
 def start_record_by_place(message, center_id):
     cur_places = list()
     for cur_place in GET_PLACES_BY_CENTER_AND_CITY(center_id, get_user(message).city):
-        cur_places.append((cur_place.address, f"start_record.{cur_place.id}"))
+        cur_places.append((cur_place.address, f"start_record_by_service_and_place.{cur_place.id}"))
     cur_places.append((f"⬅️ Вернуться к выбору сети салонов", f"start_record_by_center.{GET_CENTER(center_id).type_id}"))
     cur_places.append((MAIN_MENU_BUTTON_TEXT, "main_menu"))
     markup = generate_markup(cur_places)
@@ -335,7 +351,7 @@ def confirm_record(message, place_id, service_id, date_and_time):
 def show_records(message):
     cur_records = list()
     cur_records_str = list()
-    for i, cur_record in enumerate(sorted(get_user(message).get_records(), key=lambda x: x.start_date)):
+    for i, cur_record in enumerate(get_user(message).get_records()):
         cur_records_str.append(cur_record.get_text_for_str(i))
         cur_records.append((cur_record.get_text_for_button(i), f"show_record.{cur_record.id}"))
     cur_records.append((MAIN_MENU_BUTTON_TEXT, "main_menu"))
@@ -367,6 +383,7 @@ def show_record(message, record_id):
 
     if record.get_remaining_time() > timedelta():
         markup = generate_markup([(f"🔄 Обновить информацию", f"show_record.{record_id}"),
+                                  (f"❌ Отклонить запись", f"cancel_record_from_master.{record_id}"),
                                   (f"⬅️ Вернуться к списку моих записей", f"show_records"),
                                   (MAIN_MENU_BUTTON_TEXT, "main_menu")])
 
@@ -389,12 +406,70 @@ def show_record(message, record_id):
                          reply_markup=markup)
 
 
+def cancel_record(message, record_id):
+    DELETE_RECORD(record_id)
+    main_menu(message)
+
+
+def show_master_records(message):
+    cur_records = list()
+    cur_records_str = list()
+    for i, cur_record in enumerate(get_user(message).get_master_records()):
+        cur_records_str.append(cur_record.get_text_for_str(i))
+        cur_records.append((cur_record.get_text_for_button(i), f"show_master_record.{cur_record.id}"))
+    cur_records.append((MAIN_MENU_BUTTON_TEXT, "main_menu"))
+    markup = generate_markup(cur_records)
+
+    cur_records_str = '\n\n'.join(cur_records_str)
+    bot.send_message(message.chat.id, f"Выберите запись, которую вы хотите посмотреть:\n\n"
+                                      f"{cur_records_str}\n\n"
+                                      f"❓ (неподтвержденные записи)\n"
+                                      f"⚪️ (подтвержденные записи)\n"
+                                      f"🟢 (до записи осталось меньше часа)\n"
+                                      f"🔴 (до записи осталось меньше суток)\n\n"
+                                      f"Нажмите нужную кнопку снизу, чтобы выбрать запись",
+                     reply_markup=markup)
+
+
+def show_master_record(message, record_id):
+    record = GET_RECORD(record_id)
+    if record is None:
+        markup = generate_markup([(f"📔 Остальные записи", f"show_master_records"),
+                                  (MAIN_MENU_BUTTON_TEXT, "main_menu")])
+
+        bot.send_message(message.chat.id, f"Эта запись уже неактуальна, так как клиент отменил её, "
+                                          f"но вы можете посмотреть остальные",
+                         reply_markup=markup)
+        return
+
+    if record.active:
+        is_active = "уже подтверждена салоном"
+        markup = generate_markup([(f"❌ Отклонить запись", f"cancel_record_from_master.{record_id}"),
+                                  (f"📔 Показать остальные записи в салон", f"show_master_records"),
+                                  (MAIN_MENU_BUTTON_TEXT, "main_menu")])
+    else:
+        is_active = "ещё не подтверждена салоном"
+        markup = generate_markup([(f"✅ Подтвердить запись", f"confirm_record_from_master.{record_id}"),
+                                  (f"❌ Отклонить запись", f"cancel_record_from_master.{record_id}"),
+                                  (f"📔 Показать остальные записи в салон", f"show_master_records"),
+                                  (MAIN_MENU_BUTTON_TEXT, "main_menu")])
+    bot.send_message(record.place.owner_id, f"Запись {is_active}\n"
+                                            f"Клиент: {record.user.name} (номер: {record.user.number})\n"
+                                            f"Салон: {record.service.name}\n"
+                                            f"Адрес: {record.place.address}\n"
+                                            f"Начало: {record.start_date.strftime('%d.%m.%Y %H:%M')}\n"
+                                            f"Конец: {record.end_date.strftime('%d.%m.%Y %H:%M')}\n"
+                                            f"До начала записи осталось {record.get_text_of_remaining_time()}",
+                     reply_markup=markup)
+
+
 def send_record_to_master(record_id, first=True):
     record = GET_RECORD(record_id)
 
     if record.active:
         is_active = "уже подтверждена салоном"
-        markup = generate_markup([(f"📔 Показать остальные записи в салон", f"show_master_records"),
+        markup = generate_markup([(f"❌ Отклонить запись", f"cancel_record_from_master.{record_id}"),
+                                  (f"📔 Показать остальные записи в салон", f"show_master_records"),
                                   (MAIN_MENU_BUTTON_TEXT, "main_menu")])
     else:
         is_active = "ещё не подтверждена салоном"
@@ -407,14 +482,14 @@ def send_record_to_master(record_id, first=True):
     else:
         start_text = "Напоминаем о записи"
     bot.send_message(record.place.owner_id, f"{start_text}\n\n"
-                                      f"Запись {is_active}\n"
-                                      f"Клиент: {record.user.name} (номер: {record.user.number})\n"
-                                      f"Салон: {record.service.name}\n"
-                                      f"Адрес: {record.place.address}\n"
-                                      f"Начало: {record.start_date.strftime('%d.%m.%Y %H:%M')}\n"
-                                      f"Конец: {record.end_date.strftime('%d.%m.%Y %H:%M')}\n"
-                                      f"До начала записи осталось {record.get_text_of_remaining_time()}",
-                     reply_markup=markup)
+                                          f"Запись {is_active}\n"
+                                          f"Клиент: {record.user.name} (номер: {record.user.number})\n"
+                                          f"Салон: {record.service.name}\n"
+                                          f"Адрес: {record.place.address}\n"
+                                          f"Начало: {record.start_date.strftime('%d.%m.%Y %H:%M')}\n"
+                                          f"Конец: {record.end_date.strftime('%d.%m.%Y %H:%M')}\n"
+                                          f"До начала записи осталось {record.get_text_of_remaining_time()}",
+                         reply_markup=markup)
 
 
 def confirm_record_from_master(message, record_id):
@@ -458,4 +533,4 @@ if __name__ == "__main__":
         try:
             bot.polling(none_stop=True)
         except Exception as e:
-            print(e, "\nОшибка!", e.with_traceback())
+            print("Ошибка!", e)

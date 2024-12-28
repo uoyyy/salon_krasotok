@@ -107,7 +107,7 @@ class Place(Base):
     center = relationship('Center', back_populates='places')
     city = relationship('City', back_populates='places')
     records = relationship('Record', back_populates='place')
-    owner = relationship('User', back_populates='place')
+    owner = relationship('User', back_populates='places')
 
     services = relationship('Service', secondary='service_place', back_populates='places')
 
@@ -137,12 +137,13 @@ class User(Base):
     id = Column(Integer, primary_key=True)  # ID задаётся программой
     name = Column(String, nullable=True)
     number = Column(String, nullable=True)
+    role = Column(Integer, default=0)  # роли: 0-клиент, 1-мастер салона, 2-менеджер, 3-администратор
     list_of_records = Column(String, nullable=True)  # Хранение как строки ID-шников (JSON)
     city_id = Column(Integer, ForeignKey('cities.id'), nullable=True)
 
     records = relationship('Record', back_populates='user')
     city = relationship('City', back_populates='users')
-    place = relationship('Place', back_populates='owner')
+    places = relationship('Place', back_populates='owner')
 
     @staticmethod
     def check_user(_id):
@@ -186,10 +187,19 @@ class User(Base):
         for record in self.records:
             if record.start_date > now:
                 actual_records.append(record)
-        return actual_records
+        return sorted(actual_records, key=lambda x: x.start_date)
+
+    def get_master_records(self):
+        actual_records = list()
+        now = datetime.now()
+        for cur_place in self.places:
+            for record in cur_place.records:
+                if record.start_date > now:
+                    actual_records.append(record)
+        return sorted(actual_records, key=lambda x: x.start_date)
 
     def __repr__(self):
-        return f"Пользователь '{self.name}' из города '{self.city.name}'"
+        return f"Пользователь '{self.name}' с ролью {self.role} из города '{self.city.name}'"
 
 
 # Таблица RECORDS
@@ -224,6 +234,9 @@ class Record(Base):
             return f"{cur_timedelta.seconds // 3600} ч {(cur_timedelta.seconds // 60) % 60} мин"
         else:
             return f"{(cur_timedelta.seconds // 60) % 60} мин"
+
+    def is_actual(self):
+        return self.start_date < datetime.now()
 
     def is_soon(self):
         return self.get_remaining_time() < timedelta(days=1)
@@ -277,7 +290,7 @@ class ServicePlace(Base):
         now = datetime.now()
         next_times = list()
         while cur_time < end_time:
-            if cur_time > now:
+            if cur_time > now and GET_RECORD_IS_ARMORED(self.place_id, self.service_id, cur_time):
                 cur_end_time = cur_time + service_duration
                 next_times.append((f"{cur_time.strftime('%H:%M')} - {cur_end_time.strftime('%H:%M')}",
                                   f"{cur_time.strftime('%d/%m/%Y/%H/%M')}"))
@@ -511,6 +524,13 @@ def GET_RECORD(_id):
     return db_service.get(Record, _id)
 
 
+def GET_RECORD_IS_ARMORED(_place_id, _service_id, _start_date):
+    return db_service.only_filter(Record.service_id, _service_id,
+                                  query=db_service.only_filter(Record.place_id, _place_id,
+                                                               query=db_service.only_filter(Record.start_date, _start_date,
+                                                                                            model=Record))).count() > 0
+
+
 # Пример использования
 if __name__ == '__main__':
     # Пример добавления типов
@@ -529,8 +549,8 @@ if __name__ == '__main__':
     db_service.add(city2)
     db_service.add(city3)
 
-    user2 = User(id=955999723, name='Арслан', number='79999999999', city_id=city1.id, list_of_records='[]')
-    user1 = User(id=5112141963, name='Фархад', number='79999999998', city_id=city2.id, list_of_records='[]')
+    user2 = User(id=955999723, name='Арслан', number='79999999999', role=3, city_id=city1.id, list_of_records='[]')
+    user1 = User(id=5112141963, name='Фархад', number='79999999998', role=3, city_id=city2.id, list_of_records='[]')
     db_service.add(user1)
     db_service.add(user2)
 
@@ -559,7 +579,7 @@ if __name__ == '__main__':
     db_service.add(place4)
 
     # Пример добавления центра с типом
-    center1 = Center(name='УФФ МАРИЯ', type_id=2)
+    center1 = Center(name='МАРИЯ', type_id=2)
     center2 = Center(name='Парикмахерская', type_id=2)
     db_service.add(center1)
     db_service.add(center2)
@@ -571,8 +591,8 @@ if __name__ == '__main__':
     db_service.add(service2)
     db_service.add(service3)
 
-    place1 = Place(center_id=center1.id, address='ул. Петровская, дом 14', city_id=city1.id, owner_id=user1.id, services=[service1, service2, service3])
-    place2 = Place(center_id=center1.id, address='ул. Сексуальная, дом 69', city_id=city1.id, owner_id=user1.id, services=[service1, service2, service3])
+    place1 = Place(center_id=center1.id, address='ул. Детройтовская, дом 14', city_id=city1.id, owner_id=user1.id, services=[service1, service2, service3])
+    place2 = Place(center_id=center1.id, address='ул. Великолепная, дом 69', city_id=city1.id, owner_id=user1.id, services=[service1, service2, service3])
     place3 = Place(center_id=center2.id, address='ул. Обычная, дом 33', city_id=city1.id, owner_id=user1.id, services=[service3])
     db_service.add(place1)
     db_service.add(place2)
@@ -599,21 +619,21 @@ if __name__ == '__main__':
     db_service.add(place3)
     db_service.add(place4)
 
-    record0 = Record(user_id=user2.id, place_id=place3.id, service=service2, start_date=datetime(2024, 12, 26, 23),
-                     end_date=datetime(2024, 12, 27, 0))
-    record1 = Record(user_id=user2.id, place_id=place3.id, service=service2, start_date=datetime(2025, 1, 6, 14),
-                     end_date=datetime(2025, 1, 6, 15))
-    record2 = Record(user_id=user2.id, place_id=place1.id, service=service1, start_date=datetime(2024, 11, 29, 12),
-                     end_date=datetime(2024, 11, 29, 14))
-    record3 = Record(user_id=user2.id, place_id=place4.id, service=service1, start_date=datetime(2024, 12, 31, 23, 50),
-                     end_date=datetime(2025, 1, 1, 1, 50))
-    record4 = Record(user_id=user2.id, place_id=place2.id, service=service1, start_date=datetime(2024, 12, 26, 15, 50),
-                     end_date=datetime(2024, 12, 26, 17, 50))
-    db_service.add(record0)
-    db_service.add(record1)
-    db_service.add(record2)
-    db_service.add(record3)
-    db_service.add(record4)
+    # record0 = Record(user_id=user2.id, place_id=place3.id, service=service2, start_date=datetime(2024, 12, 26, 23),
+    #                  end_date=datetime(2024, 12, 27, 0))
+    # record1 = Record(user_id=user2.id, place_id=place3.id, service=service2, start_date=datetime(2025, 1, 6, 14),
+    #                  end_date=datetime(2025, 1, 6, 15))
+    # record2 = Record(user_id=user2.id, place_id=place1.id, service=service1, start_date=datetime(2024, 11, 29, 12),
+    #                  end_date=datetime(2024, 11, 29, 14))
+    # record3 = Record(user_id=user2.id, place_id=place4.id, service=service1, start_date=datetime(2024, 12, 31, 23, 50),
+    #                  end_date=datetime(2025, 1, 1, 1, 50))
+    # record4 = Record(user_id=user2.id, place_id=place2.id, service=service1, start_date=datetime(2024, 12, 26, 15, 50),
+    #                  end_date=datetime(2024, 12, 26, 17, 50))
+    # db_service.add(record0)
+    # db_service.add(record1)
+    # db_service.add(record2)
+    # db_service.add(record3)
+    # db_service.add(record4)
 
     print('All Types:', db_service.list(Type))
     print('All Services:', db_service.list(Service))
